@@ -2,6 +2,7 @@ from backtester.events import (
     MarketEvent, SignalEvent, OrderEvent, FillEvent,
     EventType, SignalDirection, OrderType,
 )
+from backtester.queue import EventQueue
 from datetime import datetime
 
 def test_market_event_type():
@@ -31,3 +32,21 @@ def test_fill_event_fields():
 def test_signal_event_with_quantity():
     e = SignalEvent(symbol="MSFT", direction=SignalDirection.SHORT, quantity=-50)
     assert e.quantity == -50
+
+def test_queue_put_get():
+    q = EventQueue()
+    e = MarketEvent()
+    q.put(e)
+    assert not q.empty()
+    out = q.get()
+    assert out is e
+    assert q.empty()
+
+def test_queue_fifo_order():
+    q = EventQueue()
+    e1 = MarketEvent()
+    e2 = SignalEvent(symbol="SPY", direction=SignalDirection.LONG)
+    q.put(e1)
+    q.put(e2)
+    assert q.get() is e1
+    assert q.get() is e2
