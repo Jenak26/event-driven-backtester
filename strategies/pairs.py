@@ -88,3 +88,25 @@ def compute_hedge_ratio(series_a: pd.Series, series_b: pd.Series) -> float:
     X = add_constant(series_b.values)
     model = OLS(series_a.values, X).fit()
     return float(model.params[1])
+
+
+def compute_zscore(spread: pd.Series, window: int = 60) -> pd.Series:
+    """Rolling z-score of the spread series."""
+    mu = spread.rolling(window).mean()
+    sigma = spread.rolling(window).std()
+    return (spread - mu) / sigma
+
+
+def check_rolling_coint(
+    series_a: pd.Series, series_b: pd.Series, window: int = 60
+) -> float:
+    """
+    Engle-Granger p-value on the last `window` observations.
+    Returns 1.0 (worst) if fewer than 30 observations are available.
+    """
+    common = series_a.index.intersection(series_b.index)
+    tail = common[-window:]
+    if len(tail) < 30:
+        return 1.0
+    _, pval, _ = coint(series_a.loc[tail], series_b.loc[tail])
+    return float(pval)
