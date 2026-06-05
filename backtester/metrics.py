@@ -1,5 +1,7 @@
+from typing import Callable, Dict, List
 import numpy as np
 import pandas as pd
+from dateutil.relativedelta import relativedelta
 
 
 def sharpe_ratio(
@@ -39,3 +41,49 @@ def annualized_return(equity: pd.Series, periods_per_year: int = 252) -> float:
     # A series of length n spans n-1 periods (one return per step).
     n_periods = max(len(equity) - 1, 1)
     return total ** (periods_per_year / n_periods) - 1
+
+
+class WalkForwardRunner:
+    def __init__(
+        self,
+        run_fn: Callable,
+        data_start: str,
+        data_end: str,
+        train_months: int = 12,
+        test_months: int = 3,
+    ):
+        self.run_fn = run_fn
+        self.data_start = pd.Timestamp(data_start)
+        self.data_end = pd.Timestamp(data_end)
+        self.train_months = train_months
+        self.test_months = test_months
+
+    def run(self) -> List[Dict]:
+        results = []
+        train_start = self.data_start
+
+        while True:
+            train_end = train_start + relativedelta(months=self.train_months)
+            test_start = train_end
+            test_end = test_start + relativedelta(months=self.test_months)
+
+            if test_end > self.data_end:
+                break
+
+            result = self.run_fn(
+                train_start=train_start.strftime("%Y-%m-%d"),
+                train_end=train_end.strftime("%Y-%m-%d"),
+                test_start=test_start.strftime("%Y-%m-%d"),
+                test_end=test_end.strftime("%Y-%m-%d"),
+            )
+            result.update({
+                "train_start": train_start.strftime("%Y-%m-%d"),
+                "train_end": train_end.strftime("%Y-%m-%d"),
+                "test_start": test_start.strftime("%Y-%m-%d"),
+                "test_end": test_end.strftime("%Y-%m-%d"),
+            })
+            results.append(result)
+
+            train_start = train_start + relativedelta(months=self.test_months)
+
+        return results
