@@ -124,6 +124,8 @@ walk-forward table in `notebooks/research.ipynb`.
 
 Discovered pairs: META/AVGO, META/TXN, BAC/PNC, AXP/PNC.
 
+![Out-of-sample tearsheet — equity curve, drawdown, rolling Sharpe](assets/tearsheet.png)
+
 | Metric (out-of-sample) | Value |
 |---|---|
 | Sharpe (with costs) | **-1.25** |
