@@ -29,14 +29,21 @@ def screen_pairs(
     in_sample_prices: Dict[str, pd.Series],
     sectors: Dict[str, List[str]],
     oos_prices: Optional[Dict[str, pd.Series]],
-    bonferroni_alpha: float = 0.05,
-    oos_alpha: float = 0.05,
+    in_alpha: float = 0.05,
+    oos_alpha: float = 0.10,
     min_bars: int = 60,
 ) -> List[PairSpec]:
     """
-    Return pairs that pass:
-    1. Engle-Granger cointegration at Bonferroni-adjusted threshold (in-sample).
-    2. Engle-Granger re-qualification at oos_alpha (out-of-sample), if oos_prices provided.
+    Two-stage screen. Return pairs that pass:
+    1. Engle-Granger cointegration at in_alpha on the in-sample window.
+    2. Engle-Granger re-qualification at oos_alpha on a held-out window,
+       if oos_prices provided.
+
+    The held-out stage is the multiple-testing control: joint false-positive
+    probability per pair is ~in_alpha * oos_alpha (default 0.005). Per-test
+    Bonferroni is not used because pair tests share symbols and are strongly
+    dependent — dividing alpha by the test count over-corrects to the point
+    of rejecting everything.
     """
     candidate_pairs = [
         (a, b)
@@ -48,9 +55,6 @@ def screen_pairs(
     if not candidate_pairs:
         return []
 
-    n_tests = len(candidate_pairs)
-    bonferroni_threshold = bonferroni_alpha / n_tests
-
     qualified: List[PairSpec] = []
     for sym_a, sym_b in candidate_pairs:
         sa = in_sample_prices[sym_a].dropna()
@@ -59,7 +63,7 @@ def screen_pairs(
         if len(common) < min_bars:
             continue
         _, pval, _ = coint(sa.loc[common], sb.loc[common])
-        if pval < bonferroni_threshold:
+        if pval < in_alpha:
             beta = compute_hedge_ratio(sa.loc[common], sb.loc[common])
             qualified.append((sym_a, sym_b, beta))
 
@@ -163,7 +167,7 @@ class CointegrationPairsStrategy(BaseStrategy):
             closes = self._get_close(sym, 10**9)  # every elapsed bar
             if closes is None:
                 continue
-            closes = closes[closes.index <= self.train_end]
+            closes = np.log(closes[closes.index <= self.train_end])
             in_sample[sym] = closes[closes.index <= requal_start]
             requal[sym] = closes[closes.index > requal_start]
 
@@ -196,7 +200,7 @@ class CointegrationPairsStrategy(BaseStrategy):
                 sa = self._get_close(sym_a, self.coint_window)
                 sb = self._get_close(sym_b, self.coint_window)
                 if sa is not None and sb is not None:
-                    pval = check_rolling_coint(sa, sb, self.coint_window)
+                    pval = check_rolling_coint(np.log(sa), np.log(sb), self.coint_window)
                     if pval > self.stop_coint_pval:
                         self._unwind(pair)
                         continue
@@ -211,7 +215,10 @@ class CointegrationPairsStrategy(BaseStrategy):
             if len(common) < self.z_window:
                 continue
 
-            spread = sa.loc[common] - beta * sb.loc[common]
+            # Log-price spread; β is the log-domain hedge ratio. Share sizing
+            # below (qty_b = leg_capital·β / price_b) is the exact dollar-neutral
+            # hedge for a log spread.
+            spread = np.log(sa.loc[common]) - beta * np.log(sb.loc[common])
             z_series = compute_zscore(spread, self.z_window)
             if z_series.isna().iloc[-1]:
                 continue
