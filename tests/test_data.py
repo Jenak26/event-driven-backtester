@@ -75,3 +75,31 @@ def test_exhausted_after_all_bars(spy_handler):
         while not q.empty():
             q.get()
     assert handler.is_exhausted
+
+
+def _synthetic_frames(n=20):
+    idx = pd.date_range("2023-01-02", periods=n, freq="B")
+    prices = pd.Series(range(100, 100 + n), index=idx, dtype=float)
+    return {"XYZ": pd.DataFrame({"Open": prices, "Close": prices}, index=idx)}
+
+
+def test_preloaded_data_skips_download():
+    """Ticker XYZ does not exist — passing preloaded frames must avoid yfinance."""
+    q = EventQueue()
+    handler = DataHandler(["XYZ"], "2023-01-02", "2023-02-01", q, preloaded=_synthetic_frames())
+    handler.update_bars()
+    bars = handler.get_latest_bars("XYZ", 1)
+    assert float(bars["Close"].iloc[-1]) == 100.0
+
+
+def test_preloaded_data_sliced_to_window():
+    """Preloaded frames are cropped to [start, end) like a yfinance download."""
+    q = EventQueue()
+    handler = DataHandler(["XYZ"], "2023-01-09", "2023-01-20", q, preloaded=_synthetic_frames())
+    assert handler._dates[0] >= pd.Timestamp("2023-01-09")
+    assert handler._dates[-1] < pd.Timestamp("2023-01-20")
+    # Bars before the window start are not visible
+    handler.update_bars()
+    bars = handler.get_latest_bars("XYZ", 10)
+    assert len(bars) == 1
+    assert bars.index[0] >= pd.Timestamp("2023-01-09")

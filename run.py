@@ -16,13 +16,19 @@ def run_backtest(
     commission: float = 0.001,
     slippage_bps: float = 5.0,
     strategy_kwargs: dict = None,
-) -> pd.DataFrame:
-    """Run a full backtest. Returns equity curve DataFrame indexed by date."""
+    preloaded: dict = None,
+    return_strategy: bool = False,
+):
+    """Run a full backtest. Returns equity curve DataFrame indexed by date.
+
+    With return_strategy=True, returns (equity_df, strategy) so callers can
+    inspect discovered pairs.
+    """
     if strategy_kwargs is None:
         strategy_kwargs = {}
 
     queue = EventQueue()
-    data = DataHandler(symbols, start, end, queue)
+    data = DataHandler(symbols, start, end, queue, preloaded=preloaded)
     strategy = strategy_cls(data, queue, **strategy_kwargs)
     portfolio = Portfolio(data, queue, initial_capital)
     broker = SimBroker(data, queue, commission, slippage_bps)
@@ -41,7 +47,10 @@ def run_backtest(
             elif event.type == EventType.FILL:
                 portfolio.update_fill(event)
 
-    return portfolio.get_equity_df()
+    equity = portfolio.get_equity_df()
+    if return_strategy:
+        return equity, strategy
+    return equity
 
 
 if __name__ == "__main__":

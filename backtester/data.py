@@ -5,25 +5,35 @@ from .events import MarketEvent
 from .queue import EventQueue
 
 
+def fetch_prices(symbols: List[str], start: str, end: str) -> Dict[str, pd.DataFrame]:
+    """Download adjusted bars once; reusable across many DataHandler instances."""
+    raw = yf.download(
+        symbols, start=start, end=end,
+        auto_adjust=True, progress=False,
+    )
+    # yfinance always returns a MultiIndex DataFrame (Price x Ticker).
+    # Use xs to extract a flat per-symbol DataFrame regardless of how many symbols.
+    return {sym: raw.xs(sym, axis=1, level=1) for sym in symbols}
+
+
 class DataHandler:
-    def __init__(self, symbols: List[str], start: str, end: str, queue: EventQueue):
+    def __init__(self, symbols: List[str], start: str, end: str, queue: EventQueue,
+                 preloaded: Optional[Dict[str, pd.DataFrame]] = None):
         self.symbols = symbols
         self.queue = queue
         self._data: Dict[str, pd.DataFrame] = {}
         self._cursor: int = 0
         self._dates: pd.DatetimeIndex = pd.DatetimeIndex([])
-        self._fetch(start, end)
-
-    def _fetch(self, start: str, end: str) -> None:
-        raw = yf.download(
-            self.symbols, start=start, end=end,
-            auto_adjust=True, progress=False,
-        )
-        # yfinance always returns a MultiIndex DataFrame (Price x Ticker).
-        # Use xs to extract a flat per-symbol DataFrame regardless of how many symbols.
-        for sym in self.symbols:
-            self._data[sym] = raw.xs(sym, axis=1, level=1)
-        self._dates = raw.index
+        if preloaded is not None:
+            # Crop to [start, end) — same semantics as a yfinance download
+            start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
+            for sym in symbols:
+                df = preloaded[sym]
+                self._data[sym] = df[(df.index >= start_ts) & (df.index < end_ts)]
+            self._dates = self._data[symbols[0]].index
+        else:
+            self._data = fetch_prices(symbols, start, end)
+            self._dates = self._data[symbols[0]].index
 
     def get_latest_bars(self, symbol: str, N: int = 1) -> Optional[pd.DataFrame]:
         """Return up to N bars ending at the current cursor. Never reveals future data."""
