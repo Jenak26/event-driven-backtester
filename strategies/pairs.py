@@ -124,6 +124,8 @@ class CointegrationPairsStrategy(BaseStrategy):
         z_window: int = 60,
         coint_window: int = 60,
         leg_capital: float = 10_000.0,
+        requal_months: int = 3,
+        sectors: Optional[Dict[str, List[str]]] = None,
     ):
         super().__init__(data_handler, queue)
         self.train_end = pd.Timestamp(train_end_date)
@@ -133,8 +135,11 @@ class CointegrationPairsStrategy(BaseStrategy):
         self.z_window = z_window
         self.coint_window = coint_window
         self.leg_capital = leg_capital
+        self.requal_months = requal_months
+        self.sectors = sectors if sectors is not None else SECTORS
         self._pairs: List[PairSpec] = []
-        self._active: Dict[Tuple[str, str], Optional[str]] = {}
+        # pair -> None (flat) or (side, qty_a, qty_b) as submitted at entry
+        self._active: Dict[Tuple[str, str], Optional[Tuple[str, int, int]]] = {}
         self._discovered = False
 
     def _get_close(self, symbol: str, n: int) -> Optional[pd.Series]:
@@ -144,27 +149,33 @@ class CointegrationPairsStrategy(BaseStrategy):
         return bars["Close"]
 
     def _discover(self) -> None:
-        prices = {}
-        for sym in self.data.symbols:
-            bars = self.data._data[sym]
-            mask = bars.index <= self.train_end
-            prices[sym] = bars.loc[mask, "Close"]
+        """Screen pairs point-in-time: only bars that have already elapsed.
 
-        # Split in-sample / OOS requalification window (first 3 months after train_end)
-        oos_end = self.train_end + pd.DateOffset(months=3)
-        oos_prices = {}
+        The training window is split — bars up to (train_end - requal_months)
+        feed the Bonferroni screen; the final requal_months are held out for
+        out-of-sample requalification. Only the point-in-time API is used, so
+        future data is structurally inaccessible here too.
+        """
+        requal_start = self.train_end - pd.DateOffset(months=self.requal_months)
+        in_sample: Dict[str, pd.Series] = {}
+        requal: Dict[str, pd.Series] = {}
         for sym in self.data.symbols:
-            bars = self.data._data[sym]
-            mask = (bars.index > self.train_end) & (bars.index <= oos_end)
-            oos_prices[sym] = bars.loc[mask, "Close"]
+            closes = self._get_close(sym, 10**9)  # every elapsed bar
+            if closes is None:
+                continue
+            closes = closes[closes.index <= self.train_end]
+            in_sample[sym] = closes[closes.index <= requal_start]
+            requal[sym] = closes[closes.index > requal_start]
 
-        # Filter universe to symbols actually in the data
         active_sectors = {
-            sector: [s for s in syms if s in self.data.symbols]
-            for sector, syms in SECTORS.items()
+            sector: [s for s in syms if s in in_sample]
+            for sector, syms in self.sectors.items()
         }
 
-        self._pairs = screen_pairs(prices, active_sectors, oos_prices)
+        oos = requal if self.requal_months > 0 else None
+        pairs = screen_pairs(in_sample, active_sectors, oos)
+        # A pairs trade needs a positive hedge ratio: long one leg, short the other
+        self._pairs = [(a, b, beta) for a, b, beta in pairs if beta > 0]
         self._active = {(a, b): None for a, b, _ in self._pairs}
         self._discovered = True
 
@@ -187,9 +198,7 @@ class CointegrationPairsStrategy(BaseStrategy):
                 if sa is not None and sb is not None:
                     pval = check_rolling_coint(sa, sb, self.coint_window)
                     if pval > self.stop_coint_pval:
-                        self.queue.put(SignalEvent(symbol=sym_a, direction=SignalDirection.EXIT))
-                        self.queue.put(SignalEvent(symbol=sym_b, direction=SignalDirection.EXIT))
-                        self._active[pair] = None
+                        self._unwind(pair)
                         continue
 
             # Z-score signal
@@ -213,20 +222,33 @@ class CointegrationPairsStrategy(BaseStrategy):
             price_b = float(sb.iloc[-1])
             qty_a = int(self.leg_capital / price_a)
             qty_b = int(self.leg_capital * beta / price_b)
+            if qty_a == 0 or qty_b == 0:
+                continue
 
             if trade_side is None:
                 if z > self.entry_z:
                     # Spread too high: short A, long B
                     self.queue.put(SignalEvent(sym_a, SignalDirection.SHORT, quantity=-qty_a))
                     self.queue.put(SignalEvent(sym_b, SignalDirection.LONG, quantity=qty_b))
-                    self._active[pair] = "short_a"
+                    self._active[pair] = ("short_a", -qty_a, qty_b)
                 elif z < -self.entry_z:
                     # Spread too low: long A, short B
                     self.queue.put(SignalEvent(sym_a, SignalDirection.LONG, quantity=qty_a))
                     self.queue.put(SignalEvent(sym_b, SignalDirection.SHORT, quantity=-qty_b))
-                    self._active[pair] = "long_a"
+                    self._active[pair] = ("long_a", qty_a, -qty_b)
             else:
                 if abs(z) < self.exit_z:
-                    self.queue.put(SignalEvent(symbol=sym_a, direction=SignalDirection.EXIT))
-                    self.queue.put(SignalEvent(symbol=sym_b, direction=SignalDirection.EXIT))
-                    self._active[pair] = None
+                    self._unwind(pair)
+
+    def _unwind(self, pair: Tuple[str, str]) -> None:
+        """Close a pair by negating its exact entry quantities.
+
+        A plain EXIT would flatten the whole symbol position, corrupting any
+        other pair that shares a leg.
+        """
+        sym_a, sym_b = pair
+        _, qty_a, qty_b = self._active[pair]
+        for sym, qty in ((sym_a, -qty_a), (sym_b, -qty_b)):
+            direction = SignalDirection.LONG if qty > 0 else SignalDirection.SHORT
+            self.queue.put(SignalEvent(sym, direction, quantity=qty))
+        self._active[pair] = None
