@@ -18,11 +18,15 @@ def run_backtest(
     strategy_kwargs: dict = None,
     preloaded: dict = None,
     return_strategy: bool = False,
+    return_portfolio: bool = False,
 ):
     """Run a full backtest. Returns equity curve DataFrame indexed by date.
 
-    With return_strategy=True, returns (equity_df, strategy) so callers can
-    inspect discovered pairs.
+    With return_strategy=True, the strategy is appended to the result so callers
+    can inspect discovered pairs. With return_portfolio=True, the portfolio is
+    appended so callers can read its fill ledger (get_fills_df) for trade-level
+    analysis. Both default False, so existing callers are unaffected; when both
+    are set the order is (equity_df, strategy, portfolio).
     """
     if strategy_kwargs is None:
         strategy_kwargs = {}
@@ -48,8 +52,13 @@ def run_backtest(
                 portfolio.update_fill(event)
 
     equity = portfolio.get_equity_df()
+    extras = []
     if return_strategy:
-        return equity, strategy
+        extras.append(strategy)
+    if return_portfolio:
+        extras.append(portfolio)
+    if extras:
+        return (equity, *extras)
     return equity
 
 

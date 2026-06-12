@@ -43,6 +43,134 @@ def annualized_return(equity: pd.Series, periods_per_year: int = 252) -> float:
     return total ** (periods_per_year / n_periods) - 1
 
 
+def calmar_ratio(equity: pd.Series, periods_per_year: int = 252) -> float:
+    """Annualized return divided by the absolute value of max drawdown.
+
+    Convention: with no drawdown the ratio is undefined — we return +inf for a
+    positive/flat curve and -inf for a declining one, so it never silently reads
+    as a finite, flattering number.
+    """
+    ann = annualized_return(equity, periods_per_year)
+    mdd = max_drawdown(equity)
+    if mdd == 0.0:
+        if ann > 0:
+            return float("inf")
+        if ann < 0:
+            return float("-inf")
+        return 0.0
+    return float(ann / abs(mdd))
+
+
+def monthly_returns_table(equity: pd.Series) -> pd.DataFrame:
+    """Calendar monthly returns laid out as years (rows) x months 1-12 (cols).
+
+    Each cell is that month's compounded return as a fraction (0.012 = +1.2%).
+    Months with no data are NaN. This is the data behind the tearsheet's
+    monthly-returns heatmap.
+    """
+    if equity is None or len(equity) < 2:
+        return pd.DataFrame()
+    equity = equity.sort_index()
+    returns = equity.pct_change().dropna()
+    if returns.empty:
+        return pd.DataFrame()
+    # Compound daily returns within each calendar month.
+    monthly = (1.0 + returns).resample("ME").prod() - 1.0
+    frame = pd.DataFrame({
+        "year": monthly.index.year,
+        "month": monthly.index.month,
+        "ret": monthly.values,
+    })
+    table = frame.pivot(index="year", columns="month", values="ret")
+    # Ensure all 12 month columns are present and ordered.
+    table = table.reindex(columns=range(1, 13))
+    return table
+
+
+def trades_from_fills(fills: pd.DataFrame) -> pd.DataFrame:
+    """Reconstruct round-trip trades from a fill ledger.
+
+    A trade is one symbol's journey from flat (position 0) back to flat. Its
+    P&L is the sum of cash deltas over that journey — which, because the journey
+    nets to zero shares, is the realized P&L net of commission and slippage
+    (cash delta per fill = -(qty*price + commission + slippage), exactly as the
+    Portfolio books it).
+
+    Expected columns in `fills`: symbol, quantity, fill_price, commission,
+    slippage, timestamp.
+    Returns columns: symbol, direction, pnl, holding_days, entry, exit, n_fills.
+    """
+    cols = ["symbol", "direction", "pnl", "holding_days", "entry", "exit", "n_fills"]
+    if fills is None or len(fills) == 0:
+        return pd.DataFrame(columns=cols)
+
+    trades = []
+    for symbol, grp in fills.groupby("symbol", sort=False):
+        grp = grp.sort_values("timestamp")
+        pos = 0.0
+        cash = 0.0
+        first_ts = None
+        first_qty = 0.0
+        n_fills = 0
+        for _, row in grp.iterrows():
+            qty = float(row["quantity"])
+            price = float(row["fill_price"])
+            comm = float(row.get("commission", 0.0))
+            slip = float(row.get("slippage", 0.0))
+            if pos == 0.0:
+                first_ts = row["timestamp"]
+                first_qty = qty
+                cash = 0.0
+                n_fills = 0
+            cash += -(qty * price + comm + slip)
+            pos += qty
+            n_fills += 1
+            if abs(pos) < 1e-9:  # back to flat → close the round trip
+                trades.append({
+                    "symbol": symbol,
+                    "direction": "long" if first_qty > 0 else "short",
+                    "pnl": cash,
+                    "holding_days": (pd.Timestamp(row["timestamp"])
+                                     - pd.Timestamp(first_ts)).days,
+                    "entry": pd.Timestamp(first_ts),
+                    "exit": pd.Timestamp(row["timestamp"]),
+                    "n_fills": n_fills,
+                })
+                pos = 0.0
+    if not trades:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(trades, columns=cols)
+
+
+def trade_stats(trades: pd.DataFrame) -> Dict[str, float]:
+    """Summary statistics for a reconstructed trade ledger: win rate, average
+    win/loss, profit factor (gross profit / gross loss), and average holding
+    period in days."""
+    if trades is None or len(trades) == 0:
+        return {
+            "n_trades": 0, "win_rate": float("nan"),
+            "avg_win": float("nan"), "avg_loss": float("nan"),
+            "profit_factor": float("nan"), "avg_holding_days": float("nan"),
+        }
+    pnl = trades["pnl"]
+    wins = pnl[pnl > 0]
+    losses = pnl[pnl < 0]
+    gross_profit = float(wins.sum())
+    gross_loss = float(-losses.sum())
+    if gross_loss == 0.0:
+        profit_factor = float("inf") if gross_profit > 0 else float("nan")
+    else:
+        profit_factor = gross_profit / gross_loss
+    return {
+        "n_trades": int(len(trades)),
+        "win_rate": float(len(wins) / len(trades)),
+        "avg_win": float(wins.mean()) if len(wins) else 0.0,
+        "avg_loss": float(losses.mean()) if len(losses) else 0.0,
+        "profit_factor": profit_factor,
+        "avg_holding_days": float(trades["holding_days"].mean()),
+    }
+
+
 class WalkForwardRunner:
     def __init__(
         self,

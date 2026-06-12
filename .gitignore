@@ -12,3 +12,10 @@ build/
 venv/
 venv_test/
 *.log
+
+# Downloaded reference data (S&P 500 historical constituents — fetched at setup)
+data/
+
+# Internal planning / design notes — not for publication
+backtester_plan.md
+docs/superpowers/

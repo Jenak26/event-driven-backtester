@@ -15,6 +15,7 @@ class Portfolio:
         self.cash: float = initial_capital
         self.positions: Dict[str, float] = {sym: 0.0 for sym in data_handler.symbols}
         self._equity_curve: List[dict] = []
+        self._fills: List[dict] = []  # fill ledger for trade-level analysis
 
     def update_signal(self, event: SignalEvent) -> None:
         order = self._generate_order(event)
@@ -58,6 +59,14 @@ class Portfolio:
         self.positions[event.symbol] = self.positions.get(event.symbol, 0.0) + event.quantity
         cost = event.quantity * event.fill_price + event.commission + event.slippage
         self.cash -= cost
+        self._fills.append({
+            "symbol": event.symbol,
+            "quantity": event.quantity,
+            "fill_price": event.fill_price,
+            "commission": event.commission,
+            "slippage": event.slippage,
+            "timestamp": event.timestamp,
+        })
 
     def update_equity(self) -> None:
         market_value = 0.0
@@ -75,3 +84,11 @@ class Portfolio:
 
     def get_equity_df(self) -> pd.DataFrame:
         return pd.DataFrame(self._equity_curve).set_index("date")
+
+    def get_fills_df(self) -> pd.DataFrame:
+        """Fill ledger (one row per fill) for trade-level analysis."""
+        cols = ["symbol", "quantity", "fill_price", "commission",
+                "slippage", "timestamp"]
+        if not self._fills:
+            return pd.DataFrame(columns=cols)
+        return pd.DataFrame(self._fills, columns=cols)
