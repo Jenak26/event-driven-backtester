@@ -142,7 +142,7 @@ Pairs discovered on 2019–2021 training data; everything below is measured on t
 
 Discovered pairs: `META/AVGO`, `META/TXN`, `BAC/PNC`, `AXP/PNC`.
 
-![Out-of-sample tearsheet — equity curve, drawdown, rolling Sharpe](assets/tearsheet.png)
+![Out-of-sample tearsheet — equity curve, drawdown, rolling Sharpe, trade-level P&L, and monthly-returns heatmap](assets/tearsheet.png)
 
 | Metric (out-of-sample) | Value |
 |---|---|

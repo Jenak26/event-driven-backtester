@@ -3,7 +3,7 @@ import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
 from .metrics import (
-    sharpe_ratio, max_drawdown, annualized_return, calmar_ratio,
+    sharpe_ratio, sortino_ratio, max_drawdown, annualized_return, calmar_ratio,
     monthly_returns_table, trades_from_fills, trade_stats,
 )
 
@@ -57,6 +57,86 @@ def plot_tearsheet(
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig
+
+
+def plot_full_tearsheet(
+    equity_df: pd.DataFrame,
+    fills_df: pd.DataFrame = None,
+    title: str = "Backtest Tearsheet",
+    rolling_sharpe_window: int = 126,
+    save_path: str = None,
+) -> plt.Figure:
+    """Composite professional tearsheet in one figure:
+      1. equity curve (with Sharpe / Sortino / Calmar / max-DD header)
+      2. drawdown
+      3. rolling Sharpe          | 4. trade P&L histogram (if fills provided)
+      5. monthly-returns heatmap (diverging colormap)
+    """
+    import matplotlib.gridspec as gridspec
+
+    equity = equity_df["equity"]
+    returns = equity.pct_change().dropna()
+    rolling_sr = returns.rolling(rolling_sharpe_window).apply(
+        lambda r: sharpe_ratio(pd.Series(r)), raw=False
+    )
+    peak = equity.cummax()
+    drawdown = (equity - peak) / peak
+
+    fig = plt.figure(figsize=(14, 16))
+    gs = gridspec.GridSpec(
+        4, 2, figure=fig, height_ratios=[1.4, 1.0, 1.1, 1.3],
+        hspace=0.38, wspace=0.18,
+    )
+    fig.suptitle(title, fontsize=16, fontweight="bold", y=0.995)
+
+    # Panel 1: equity curve
+    ax_eq = fig.add_subplot(gs[0, :])
+    ax_eq.plot(equity.index, equity.values, linewidth=1.3, color="#1f77b4")
+    ax_eq.axhline(equity.iloc[0], color="#888", linewidth=0.6, linestyle="--")
+    ax_eq.set_ylabel("Portfolio Value ($)")
+    ax_eq.set_title(
+        f"Ann. Return {annualized_return(equity):.1%}   |   "
+        f"Sharpe {sharpe_ratio(returns):.2f}   |   "
+        f"Sortino {sortino_ratio(returns):.2f}   |   "
+        f"Calmar {calmar_ratio(equity):.2f}   |   "
+        f"Max DD {max_drawdown(equity):.1%}",
+        fontsize=11,
+    )
+    ax_eq.grid(alpha=0.3)
+
+    # Panel 2: drawdown
+    ax_dd = fig.add_subplot(gs[1, :])
+    ax_dd.fill_between(drawdown.index, drawdown.values, 0, alpha=0.5, color="#d62728")
+    ax_dd.set_ylabel("Drawdown")
+    ax_dd.set_title("Drawdown", fontsize=11)
+    ax_dd.grid(alpha=0.3)
+
+    # Panel 3: rolling Sharpe
+    ax_rs = fig.add_subplot(gs[2, 0])
+    ax_rs.plot(rolling_sr.index, rolling_sr.values, linewidth=1.0, color="#2ca02c")
+    ax_rs.axhline(0, color="black", linewidth=0.5, linestyle="--")
+    ax_rs.set_ylabel(f"Rolling {rolling_sharpe_window}d Sharpe")
+    ax_rs.set_title(f"Rolling {rolling_sharpe_window}-day Sharpe", fontsize=11)
+    ax_rs.tick_params(axis="x", labelrotation=30)
+    ax_rs.grid(alpha=0.3)
+
+    # Panel 4: trade-level P&L
+    ax_tr = fig.add_subplot(gs[2, 1])
+    if fills_df is not None and len(fills_df) > 0:
+        plot_trade_analysis(fills_df, ax=ax_tr, title="Trade P&L (cost-adjusted)")
+    else:
+        ax_tr.text(0.5, 0.5, "No fills provided", ha="center", va="center",
+                   transform=ax_tr.transAxes)
+        ax_tr.set_title("Trade P&L (cost-adjusted)", fontsize=11)
+
+    # Panel 5: monthly returns heatmap
+    ax_hm = fig.add_subplot(gs[3, :])
+    plot_monthly_heatmap(equity_df, ax=ax_hm, title="Monthly Returns (%)")
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
     return fig
 
